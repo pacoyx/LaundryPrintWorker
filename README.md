@@ -111,3 +111,7 @@ sc delete LaundryPrintWorker
 
 - No subas `appsettings.Production.json` ni ningún archivo con credenciales/URLs internas reales; están excluidos vía `.gitignore`.
 - El `WorkerKey` actúa como credencial del worker frente al backend; trátalo como secreto.
+
+## Licencia
+
+Software propietario de Lavanderia Kyo. Todos los derechos reservados — ver [LICENSE](./LICENSE).
