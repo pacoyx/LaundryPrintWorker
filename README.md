@@ -30,6 +30,16 @@ Models/
    - Marca el trabajo como completado (`POST api/printjobs/{queueId}/completed`) o como error (`POST api/printjobs/{queueId}/error`) si algo falla.
 4. Envía un `Heartbeat` cada 30 segundos mientras la conexión esté activa.
 
+### Comportamiento ante fallas de conexión
+
+El worker está diseñado para **nunca caerse por falta de internet o por el backend caído**, ni al iniciar ni mientras corre:
+
+- **Conexión inicial / registro:** si al arrancar no logra conectarse al Hub o registrarse (`RegisterPrinter`), no se cae — queda reintentando cada 15 segundos de forma indefinida hasta lograrlo. Útil para el caso típico de que la PC arranque antes de que el router/internet esté listo.
+- **Conexión ya establecida:** usa `WithAutomaticReconnect()` de SignalR, que reconecta solo si la conexión se corta después de haberse establecido con éxito.
+- **Sincronización de impresoras y Heartbeat:** si fallan (ej. backend caído momentáneamente), solo se registra un error en el log; el worker sigue corriendo y lo vuelve a intentar en el siguiente ciclo, sin reiniciarse.
+
+Es decir, el servicio de Windows **debería quedarse siempre en estado `RUNNING`**, incluso sin internet — simplemente no va a poder recibir ni imprimir trabajos hasta que la conexión vuelva, y lo retomará solo, sin que alguien tenga que reiniciarlo manualmente.
+
 ## Requisitos
 
 - Windows 10/11 (usa APIs de impresión de Windows vía `System.Drawing.Printing` y `winspool`).
@@ -102,22 +112,42 @@ dotnet publish -c Release -o ./publish
 
 **Opción 2 — Instalarlo como servicio de Windows (recomendado para dejarlo en producción):** corre en segundo plano, sin depender de una sesión iniciada, y puede configurarse para arrancar solo con la PC.
 
-Desde una consola con permisos de administrador, parado en la carpeta donde quedó el `.exe`:
+Desde una consola de **PowerShell como administrador**, parado en la carpeta donde quedó el `.exe`:
 
 ```powershell
-sc create LaundryPrintWorker binPath="C:\ruta\publish\LaundryPrintWorker.exe" start=auto
-sc start LaundryPrintWorker
-sc query LaundryPrintWorker
+sc.exe create LaundryPrintWorker binPath= "C:\ruta\publish\LaundryPrintWorker.exe" start= auto
+sc.exe start LaundryPrintWorker
+sc.exe query LaundryPrintWorker
 ```
 
-El flag `start=auto` es necesario para que Windows lo levante solo en cada arranque — sin él, `sc create` lo deja en modo manual.
+> **Importante:** usa siempre `sc.exe`, no `sc` a secas — en PowerShell, `sc` es un alias de `Set-Content` (no el comando de servicios de Windows), y lo va a interpretar mal (`binpath=...` como si fuera un parámetro de archivo). También respeta el espacio después del `=` en cada opción (`binPath= "valor"`); sin ese espacio `sc.exe` no lo parsea bien.
+
+El flag `start= auto` es necesario para que Windows lo levante solo en cada arranque — sin él, `sc.exe create` lo deja en modo manual.
 
 Para desinstalarlo:
 
 ```powershell
-sc stop LaundryPrintWorker
-sc delete LaundryPrintWorker
+sc.exe stop LaundryPrintWorker
+sc.exe delete LaundryPrintWorker
 ```
+
+### Hacer que se reinicie solo si se cae
+
+Como defensa adicional a la resiliencia de reconexión del propio worker (ver sección siguiente), puedes configurar que Windows reinicie el servicio automáticamente si llega a caerse por cualquier otra razón no contemplada:
+
+```powershell
+sc.exe failure LaundryPrintWorker reset= 86400 actions= restart/60000/restart/60000/restart/60000
+```
+
+### Solución de problemas
+
+Si el servicio queda en `STOPPED` después de `sc.exe start`, revisa el Visor de Eventos de Windows para ver la excepción real:
+
+```powershell
+Get-WinEvent -LogName Application -MaxEvents 30 | Where-Object { $_.Message -like "*LaundryPrintWorker*" -or $_.Message -like "*Worker*" } | Sort-Object TimeCreated | Format-List TimeCreated, LevelDisplayName, Message
+```
+
+Causa común: el `appsettings.json` que quedó junto al `.exe` todavía tiene los valores de ejemplo (`api.midominio.com`) en vez de la URL real del backend — revisa ese archivo antes de asumir que es un problema de red o del código.
 
 ## Dependencias principales
 

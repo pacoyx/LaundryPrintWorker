@@ -75,29 +75,16 @@ public sealed class Worker : BackgroundService
                 _logger.LogInformation("Trabajo recibido. QueueId={QueueId}, PrinterId={PrinterId}, PrinterName={PrinterName}", notification.QueueId, notification.PrinterId, notification.PrinterName);
                 await ProcessPrintJob(notification.QueueId,notification.PrinterName,  stoppingToken);
             });
-        try
-        {
-            await connection.StartAsync(stoppingToken);
-            _logger.LogInformation("Conectado al Hub.");
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "No fue posible conectar al Hub.");
-            throw;
-        }
+        await ConnectAndRegisterWithRetryAsync(connection, stoppingToken);
 
         try
         {
-            await connection.InvokeAsync("RegisterPrinter", _options.WorkerKey, Environment.MachineName, stoppingToken);
-            _logger.LogInformation("Worker registrado correctamente.");
+            await DiscoverPrintersAsync(stoppingToken);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error registrando Worker.");
-            throw;
+            _logger.LogError(ex, "Error sincronizando impresoras. El worker sigue activo igual.");
         }
-
-        await DiscoverPrintersAsync(stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -112,6 +99,45 @@ public sealed class Worker : BackgroundService
             }
 
             await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
+        }
+    }
+
+    // Reintenta la conexion/registro en el Hub indefinidamente en vez de tumbar
+    // el servicio (BackgroundService.ExecuteAsync lanzando una excepcion mata
+    // todo el host). Asi el worker se recupera solo cuando vuelve el internet,
+    // sin que alguien tenga que reiniciar el servicio a mano.
+    private async Task ConnectAndRegisterWithRetryAsync(HubConnection connection, CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                await connection.StartAsync(stoppingToken);
+                _logger.LogInformation("Conectado al Hub.");
+
+                await connection.InvokeAsync("RegisterPrinter", _options.WorkerKey, Environment.MachineName, stoppingToken);
+                _logger.LogInformation("Worker registrado correctamente.");
+                return;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "No fue posible conectar/registrar al Hub. Reintentando en 15 segundos...");
+
+                if (connection.State != HubConnectionState.Disconnected)
+                {
+                    try
+                    {
+                        await connection.StopAsync(stoppingToken);
+                    }
+                    catch
+                    {
+                        // Ignorado: ya estamos manejando un error de conexion, no queremos
+                        // que un fallo al detener tape el error original.
+                    }
+                }
+
+                await Task.Delay(TimeSpan.FromSeconds(15), stoppingToken);
+            }
         }
     }
 
