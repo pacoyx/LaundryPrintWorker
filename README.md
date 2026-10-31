@@ -80,18 +80,37 @@ dotnet run
 
 El worker se conectará usando los valores combinados de `appsettings.json` + `appsettings.Development.json` (perfil `Development`).
 
-## Publicar e instalar como servicio de Windows
+## Publicar
+
+Para llevar el worker a otra PC (ej. una impresora de sucursal) sin depender de que esa máquina tenga el .NET Runtime instalado, publicar como **autocontenido en un solo archivo**:
+
+```bash
+dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ./publish
+```
+
+Esto genera `./publish/LaundryPrintWorker.exe` (incluye el runtime de .NET embebido) junto con `appsettings.json`. Copia toda la carpeta `./publish` a la PC destino (USB, red, etc.) y ajusta ahí los valores reales de `WorkerSettings` antes de arrancarlo (ver sección "Configuración").
+
+Alternativa más liviana, pero requiere .NET 9 Runtime ya instalado en la PC destino:
 
 ```bash
 dotnet publish -c Release -o ./publish
 ```
 
-Luego, desde una consola con permisos de administrador:
+## Cómo correrlo en la PC destino: ejecutable directo vs. servicio de Windows
+
+**Opción 1 — Doble clic al `.exe`:** corre en una ventana de consola visible. Útil solo para probar que conecta bien al backend (revisar que no tire errores de configuración). Si se cierra la ventana, se cierra sesión de Windows, o la PC se reinicia, el worker deja de escuchar trabajos de impresión.
+
+**Opción 2 — Instalarlo como servicio de Windows (recomendado para dejarlo en producción):** corre en segundo plano, sin depender de una sesión iniciada, y puede configurarse para arrancar solo con la PC.
+
+Desde una consola con permisos de administrador, parado en la carpeta donde quedó el `.exe`:
 
 ```powershell
-sc create LaundryPrintWorker binPath="C:\ruta\publish\LaundryPrintWorker.exe"
+sc create LaundryPrintWorker binPath="C:\ruta\publish\LaundryPrintWorker.exe" start=auto
 sc start LaundryPrintWorker
+sc query LaundryPrintWorker
 ```
+
+El flag `start=auto` es necesario para que Windows lo levante solo en cada arranque — sin él, `sc create` lo deja en modo manual.
 
 Para desinstalarlo:
 
