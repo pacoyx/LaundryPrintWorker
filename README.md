@@ -35,10 +35,13 @@ Models/
 El worker está diseñado para **nunca caerse por falta de internet o por el backend caído**, ni al iniciar ni mientras corre:
 
 - **Conexión inicial / registro:** si al arrancar no logra conectarse al Hub o registrarse (`RegisterPrinter`), no se cae — queda reintentando cada 15 segundos de forma indefinida hasta lograrlo. Útil para el caso típico de que la PC arranque antes de que el router/internet esté listo.
-- **Conexión ya establecida:** usa `WithAutomaticReconnect()` de SignalR, que reconecta solo si la conexión se corta después de haberse establecido con éxito.
+- **Conexión ya establecida:** usa `WithAutomaticReconnect()` de SignalR, pero esta función solo reintenta unas pocas veces (0s, 2s, 10s, 30s) y luego se rinde para siempre si no logra reconectar. Para cubrir ese caso, el worker escucha el evento `Closed` y, si la conexión se cierra definitivamente, vuelve a ejecutar el mismo ciclo de registro indefinido desde cero (igual que al arrancar).
+- **PC suspendida (sleep/hibernación):** cuando Windows suspende el equipo, el socket de SignalR muere y la reconexión automática puede no notarlo a tiempo. El worker escucha el evento del sistema operativo `SystemEvents.PowerModeChanged` y, apenas la PC despierta, fuerza una reconexión y vuelve a reportar las impresoras instaladas — sin esperar a que falle un Heartbeat para darse cuenta.
 - **Sincronización de impresoras y Heartbeat:** si fallan (ej. backend caído momentáneamente), solo se registra un error en el log; el worker sigue corriendo y lo vuelve a intentar en el siguiente ciclo, sin reiniciarse.
 
 Es decir, el servicio de Windows **debería quedarse siempre en estado `RUNNING`**, incluso sin internet — simplemente no va a poder recibir ni imprimir trabajos hasta que la conexión vuelva, y lo retomará solo, sin que alguien tenga que reiniciarlo manualmente.
+
+> **Recomendación de todas formas:** en la configuración de energía de Windows de la PC donde corre este worker, pon "Poner el equipo en suspensión" en **Nunca** (el monitor/pantalla sí se puede apagar normalmente, eso no afecta al servicio). Suspender el equipo completo corta la red y puede dejar la impresora USB en estado de ahorro de energía; la reconexión automática ayuda, pero evitar la suspensión del equipo es más confiable para un equipo de impresión que debe estar siempre disponible.
 
 ## Requisitos
 
@@ -54,9 +57,9 @@ La configuración se define en `appsettings.json` (y se puede sobreescribir por 
 ```json
 {
   "WorkerSettings": {
-    "WorkerKey": "BN123-456-789",
-    "SignalRHubUrl": "https://api.midominio.com/printhub",
-    "ApiBaseUrl": "https://api.midominio.com"
+    "WorkerKey": "<CAMBIAR-POR-EL-WORKERKEY-DE-ESTE-EQUIPO>",
+    "SignalRHubUrl": "<CAMBIAR-POR-LA-URL-DEL-HUB-DEL-BACKEND>",
+    "ApiBaseUrl": "<CAMBIAR-POR-LA-URL-BASE-DEL-BACKEND>"
   },
   "TicketSettings": {
     "CompanyName": "Lavanderia Kyo",
@@ -147,7 +150,13 @@ Si el servicio queda en `STOPPED` después de `sc.exe start`, revisa el Visor de
 Get-WinEvent -LogName Application -MaxEvents 30 | Where-Object { $_.Message -like "*LaundryPrintWorker*" -or $_.Message -like "*Worker*" } | Sort-Object TimeCreated | Format-List TimeCreated, LevelDisplayName, Message
 ```
 
-Causa común: el `appsettings.json` que quedó junto al `.exe` todavía tiene los valores de ejemplo (`api.midominio.com`) en vez de la URL real del backend — revisa ese archivo antes de asumir que es un problema de red o del código.
+Causa común: el `appsettings.json` que quedó junto al `.exe` todavía tiene los valores de ejemplo (placeholders `<CAMBIAR-...>`) en vez de los datos reales del backend/equipo — revisa ese archivo antes de asumir que es un problema de red o del código.
+
+Si después de corregir `WorkerSettings:WorkerKey` y reiniciar el servicio los logs siguen mostrando la clave vieja, verifica en ese orden:
+1. Que estés editando el `appsettings.json` **sin sufijo** (el que siempre se carga) y no solo el `appsettings.Development.json` — este último solo se usa si la variable de entorno `DOTNET_ENVIRONMENT=Development` está seteada, lo cual no es el caso por defecto.
+2. Que el proceso realmente haya reiniciado (`Get-Process LaundryPrintWorker | Select StartTime` — compara con la hora del reinicio) y no sea un proceso viejo que quedó colgado.
+3. Que no estés mirando una entrada vieja del Visor de Eventos: filtra por fecha reciente, no solo por los últimos N eventos (`Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='LaundryPrintWorker'; StartTime=(Get-Date).AddMinutes(-15)}`).
+4. **Al volver a publicar (`dotnet publish`)**, el `appsettings.json` del repo se regenera con los valores placeholder — copia solo el `.exe` (y `.pdb` si quieres símbolos de depuración) a la PC destino, nunca sobreescribas el `appsettings.json` que ya tiene los valores reales de esa PC.
 
 ## Dependencias principales
 

@@ -16,6 +16,8 @@ public sealed class Worker : BackgroundService
 
     private readonly ILogger<Worker> _logger;
 
+    private Microsoft.Win32.PowerModeChangedEventHandler? _powerModeHandler;
+
     public Worker(
         SignalRConnectionService signalR,
         PrintApiClient apiClient,
@@ -60,14 +62,58 @@ public sealed class Worker : BackgroundService
             return Task.CompletedTask;
         };
 
-        connection.Closed += error =>
+        connection.Closed += async error =>
         {
+            // WithAutomaticReconnect() solo reintenta unas pocas veces (0s, 2s, 10s, 30s) y
+            // luego se rinde para siempre si no logra reconectar -tipicamente porque la PC
+            // estuvo suspendida/sin red mas tiempo del que duran esos reintentos. Sin este
+            // manejador, el servicio queda "vivo" pero inutil silenciosamente: no se cae,
+            // pero jamas vuelve a registrar impresoras ni recibir trabajos de impresion.
             _logger.LogError(
                 error,
-                "Conexión SignalR cerrada.");
+                "Conexión SignalR cerrada definitivamente. Reintentando registro desde cero...");
 
-            return Task.CompletedTask;
+            await Task.Delay(TimeSpan.FromSeconds(Random.Shared.Next(1, 5)), stoppingToken);
+            await ConnectAndRegisterWithRetryAsync(connection, stoppingToken);
         };
+
+        // Si Windows suspende el equipo (monitor+sistema, no solo el monitor), el socket de
+        // SignalR muere y la reconexion automatica puede tardar en notarlo o directamente
+        // rendirse (ver manejador de Closed arriba). Escuchar el evento de resume del sistema
+        // operativo permite forzar la reconexion y el redescubrimiento de impresoras apenas la
+        // PC despierta, en vez de esperar a que un heartbeat fallido lo detecte.
+        _powerModeHandler = async (sender, e) =>
+        {
+            if (e.Mode != Microsoft.Win32.PowerModes.Resume)
+            {
+                return;
+            }
+
+            try
+            {
+                _logger.LogWarning("Equipo reanudado de suspensión. Forzando reconexión al Hub.");
+
+                if (connection.State != HubConnectionState.Disconnected)
+                {
+                    try
+                    {
+                        await connection.StopAsync(stoppingToken);
+                    }
+                    catch
+                    {
+                        // Ignorado: vamos a reconectar de todas formas.
+                    }
+                }
+
+                await ConnectAndRegisterWithRetryAsync(connection, stoppingToken);
+                await DiscoverPrintersAsync(stoppingToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error reconectando tras reanudar de suspensión.");
+            }
+        };
+        Microsoft.Win32.SystemEvents.PowerModeChanged += _powerModeHandler;
 
         connection.On<PrintNotificationDto>("PrintAvailable",
             async notification =>
@@ -100,6 +146,17 @@ public sealed class Worker : BackgroundService
 
             await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
         }
+    }
+
+    public override Task StopAsync(CancellationToken cancellationToken)
+    {
+        if (_powerModeHandler is not null)
+        {
+            Microsoft.Win32.SystemEvents.PowerModeChanged -= _powerModeHandler;
+            _powerModeHandler = null;
+        }
+
+        return base.StopAsync(cancellationToken);
     }
 
     // Reintenta la conexion/registro en el Hub indefinidamente en vez de tumbar
