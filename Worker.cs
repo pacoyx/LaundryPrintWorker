@@ -136,7 +136,13 @@ public sealed class Worker : BackgroundService
         {
             try
             {
-                await connection.InvokeAsync("Heartbeat", stoppingToken);
+                // Timeout explicito ademas del propio de SignalR: una conexion "zombie" (TCP medio
+                // abierto, tipico de redes caseras/NAT inestable) puede dejar este InvokeAsync
+                // esperando mas de lo normal. Con el linked token, a los 10s se cancela esta
+                // espera puntual (no mata la conexion entera) y el loop sigue su curso normal.
+                using var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                heartbeatCts.CancelAfter(TimeSpan.FromSeconds(10));
+                await connection.InvokeAsync("Heartbeat", heartbeatCts.Token);
                 _logger.LogDebug("Heartbeat enviado");
             }
             catch (Exception ex)

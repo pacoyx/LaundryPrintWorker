@@ -61,6 +61,10 @@ La configuración se define en `appsettings.json` (y se puede sobreescribir por 
     "SignalRHubUrl": "<CAMBIAR-POR-LA-URL-DEL-HUB-DEL-BACKEND>",
     "ApiBaseUrl": "<CAMBIAR-POR-LA-URL-BASE-DEL-BACKEND>"
   },
+  "Seq": {
+    "Url": "<CAMBIAR-POR-LA-URL-DEL-SEQ-DEL-BACKEND-O-DEJAR-VACIO-PARA-DESACTIVAR>",
+    "ApiKey": "<CAMBIAR-POR-EL-API-KEY-DE-INGESTA-DE-SEQ>"
+  },
   "TicketSettings": {
     "CompanyName": "Lavanderia Kyo",
     "Address": "...",
@@ -79,7 +83,26 @@ La configuración se define en `appsettings.json` (y se puede sobreescribir por 
 | `WorkerSettings.WorkerKey` | Identificador único de este worker/sucursal, usado para registrarse en el Hub. |
 | `WorkerSettings.SignalRHubUrl` | URL del Hub de SignalR que notifica nuevos trabajos de impresión. |
 | `WorkerSettings.ApiBaseUrl` | URL base de la API REST usada para consultar y actualizar trabajos de impresión. |
+| `Seq.Url` | URL del servidor Seq para centralizar logs (ej. `http://161.35.234.43:8787`, el mismo que usa el backend). Si se deja vacío, el worker simplemente no envía nada a Seq -no falla ni se cae por eso. |
+| `Seq.ApiKey` | API key de ingesta de ese Seq. Opcional si el servidor acepta ingesta sin autenticación. |
 | `TicketSettings.*` | Datos de la empresa y textos legales impresos en el ticket. |
+
+## Logs
+
+Además del Event Log de Windows (donde siguen apareciendo Warnings/Errors como antes), el worker ahora escribe logs en dos lugares más:
+
+- **Archivo local**: `logs/log-AAAAMMDD.txt`, junto al `.exe` (rota todos los días, guarda los últimos 14 días). Se puede abrir directo con el Bloc de notas en la PC donde está instalado, sin necesidad de red ni de nada más -útil si Seq no es alcanzable justo quieres ver qué pasó.
+- **Seq** (si se configuró `Seq.Url`): mismo servidor centralizado que ya usa el backend, para ver los logs de todos los workers y del backend en un solo lugar, con filtros y búsqueda.
+
+### Protección contra cuelgues (timeouts)
+
+Las llamadas a Windows (`WritePrinter` y similares, usadas para imprimir) son nativas y no se pueden cancelar de verdad si se traban (impresora sin papel, atascada, desconectada). Por eso:
+
+- **Imprimir un ticket tiene un límite de 20 segundos.** Si no termina en ese plazo, se registra un error (visible en el log/Seq) y el worker sigue funcionando normal para el siguiente trabajo, en vez de quedarse colgado para siempre.
+- **El Heartbeat a SignalR tiene un límite de 10 segundos** por el mismo motivo (conexiones "zombie" en redes inestables).
+- **Las llamadas HTTP al backend tienen un límite de 30 segundos** (antes no tenían límite explícito, usaban el default de .NET de 100 segundos).
+
+Si el worker se sigue colgando después de esto, revisa los logs (archivo o Seq) justo antes del cuelgue -ahora debería quedar registrado el motivo exacto en vez de quedar a ciegas.
 
 > Los valores reales de producción (URLs, `WorkerKey`, etc.) no deben commitearse. Usa `appsettings.Development.json` para desarrollo local y variables de entorno o `appsettings.Production.json` (ignorado por git) para producción.
 

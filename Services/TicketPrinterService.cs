@@ -26,11 +26,34 @@ public class TicketPrinterService
         _settings = settings.Value;
     }
 
+    private static readonly TimeSpan PrintTimeout = TimeSpan.FromSeconds(20);
+
     public async Task PrintAsync(PrintJobDto job, string printerName)
     {
         _logger.LogInformation("Imprimiendo comprobante {Document}", job.NumeroGuia);
-        PrintTicket(job, printerName);
-        await Task.CompletedTask;
+
+        // SendBytesToPrinter llama directo a winspool.drv (OpenPrinter/WritePrinter/etc.), que son
+        // llamadas nativas SINCRONAS sin ningun timeout propio. Si la impresora queda trabada
+        // (papel atascado, sin papel, desconexion de USB, spooler colgado), esa llamada puede
+        // quedarse esperando para siempre y, como esto corre dentro del mismo canal de SignalR
+        // que procesa los trabajos, termina colgando TODO el worker -nada mas vuelve a procesarse
+        // hasta reiniciar el servicio a mano. Por eso se corre en un hilo aparte con limite de
+        // tiempo: si no termina en el plazo, se abandona esa llamada (no se puede cancelar de
+        // verdad, es nativa) pero el worker sigue funcionando para el resto de trabajos.
+        var printTask = Task.Run(() => PrintTicket(job, printerName));
+        var winner = await Task.WhenAny(printTask, Task.Delay(PrintTimeout));
+
+        if (winner != printTask)
+        {
+            _logger.LogError(
+                "Timeout de {TimeoutSeconds}s imprimiendo {Document} en la impresora '{Printer}'. Revisar si esta trabada, sin papel o desconectada.",
+                PrintTimeout.TotalSeconds, job.NumeroGuia, printerName);
+            throw new TimeoutException($"La impresora '{printerName}' no respondió en {PrintTimeout.TotalSeconds} segundos.");
+        }
+
+        // Si PrintTicket lanzo una excepcion real (ej. impresora no encontrada), esto la propaga.
+        await printTask;
+
         _logger.LogInformation("Impresión terminada");
     }
 
