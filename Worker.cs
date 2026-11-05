@@ -53,13 +53,27 @@ public sealed class Worker : BackgroundService
             return Task.CompletedTask;
         };
 
-        connection.Reconnected += connectionId =>
+        connection.Reconnected += async connectionId =>
         {
             _logger.LogInformation(
                 "SignalR reconectado. ConnectionId: {ConnectionId}",
                 connectionId);
 
-            return Task.CompletedTask;
+            // El auto-reconnect de SignalR abre una conexion nueva (nuevo ConnectionId): el
+            // servidor ya no tiene a este worker en el grupo "worker-{id}" (eso solo se arma
+            // dentro de RegisterPrinter, ver PrintHub.cs), asi que sin este re-registro el
+            // worker queda "conectado" pero invisible para el despacho de trabajos de
+            // impresion -ningun error visible, simplemente deja de recibir PrintAvailable
+            // hasta que alguien reinicia el servicio a mano.
+            try
+            {
+                await connection.InvokeAsync("RegisterPrinter", _options.WorkerKey, Environment.MachineName, stoppingToken);
+                _logger.LogInformation("Worker re-registrado tras la reconexión.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "No se pudo re-registrar el worker tras la reconexión de SignalR.");
+            }
         };
 
         connection.Closed += async error =>
