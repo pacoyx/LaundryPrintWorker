@@ -135,6 +135,22 @@ public sealed class Worker : BackgroundService
                 _logger.LogInformation("Trabajo recibido. QueueId={QueueId}, PrinterId={PrinterId}, PrinterName={PrinterName}", notification.QueueId, notification.PrinterId, notification.PrinterName);
                 await ProcessPrintJob(notification.QueueId,notification.PrinterName,  stoppingToken);
             });
+
+        connection.On<TestPrintCommandDto>("PrintTestTicket",
+            async command =>
+            {
+                _logger.LogInformation("Prueba de impresión recibida. PrinterName={PrinterName}", command.PrinterName);
+                try
+                {
+                    await _printerService.PrintTestAsync(command.PrinterName, command.Timestamp);
+                    _logger.LogInformation("Prueba de impresión completada en '{Printer}'", command.PrinterName);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error en la prueba de impresión en '{Printer}'", command.PrinterName);
+                }
+            });
+
         await ConnectAndRegisterWithRetryAsync(connection, stoppingToken);
 
         try

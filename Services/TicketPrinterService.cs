@@ -57,6 +57,50 @@ public class TicketPrinterService
         _logger.LogInformation("Impresión terminada");
     }
 
+    // Impresion corta e independiente de PrintAsync/PrintTicket: no pasa por la plantilla
+    // completa de guia (encabezado de empresa, items, lineas legales, etc.), solo confirma que
+    // el worker recibio el comando y la impresora respondio, sin gastar papel de mas.
+    public async Task PrintTestAsync(string printerName, DateTime timestamp)
+    {
+        _logger.LogInformation("Imprimiendo ticket de prueba en '{Printer}'", printerName);
+
+        var printTask = Task.Run(() => PrintTestTicket(printerName, timestamp));
+        var winner = await Task.WhenAny(printTask, Task.Delay(PrintTimeout));
+
+        if (winner != printTask)
+        {
+            _logger.LogError(
+                "Timeout de {TimeoutSeconds}s en la prueba de impresion en '{Printer}'. Revisar si esta trabada, sin papel o desconectada.",
+                PrintTimeout.TotalSeconds, printerName);
+            throw new TimeoutException($"La impresora '{printerName}' no respondió en {PrintTimeout.TotalSeconds} segundos.");
+        }
+
+        await printTask;
+
+        _logger.LogInformation("Prueba de impresión terminada");
+    }
+
+    private void PrintTestTicket(string printerName, DateTime timestamp)
+    {
+        var e = new EPSON();
+
+        var bytes = new List<byte>();
+        bytes.AddRange(e.Initialize());
+        bytes.AddRange(e.CodePage(CodePage.WPC1252));
+
+        bytes.AddRange(e.CenterAlign());
+        bytes.AddRange(e.SetStyles(PrintStyle.Bold | PrintStyle.DoubleWidth));
+        bytes.AddRange(e.PrintLine("PRUEBA DE IMPRESION"));
+        bytes.AddRange(e.SetStyles(PrintStyle.None));
+        bytes.AddRange(e.PrintLine(timestamp.ToString("dd/MM/yyyy HH:mm:ss")));
+        bytes.AddRange(e.PrintLine("Conexión OK"));
+
+        bytes.AddRange(e.FeedLines(3));
+        bytes.AddRange(e.PartialCutAfterFeed(3));
+
+        RawPrinterHelper.SendBytesToPrinter(printerName, bytes.ToArray(), "Prueba de impresión");
+    }
+
     private void PrintTicket(PrintJobDto job, string printerName)
     {
         var e = new EPSON();
