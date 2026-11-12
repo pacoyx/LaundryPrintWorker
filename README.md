@@ -188,6 +188,63 @@ Si después de corregir `WorkerSettings:WorkerKey` y reiniciar el servicio los l
 - `Microsoft.Extensions.Hosting.WindowsServices` — permite ejecutar el worker como servicio de Windows.
 - `System.Drawing.Common` — soporte para impresión gráfica/raw en Windows.
 
+## Hoja de ruta: imprimir desde tablet/celular sin instalar nada (impresora de red + appliance tipo Raspberry Pi)
+
+> **Estado: planeado, todavía no implementado.** Esta sección documenta la discusión y el plan acordado para retomarlo más adelante -no describe comportamiento actual del código.
+
+### Contexto / por qué
+
+Hoy este worker solo puede correr en una PC Windows con la impresora instalada localmente (USB + driver de Windows). Eso tiene dos problemas si el sistema se usa desde una tablet/celular, o si se quiere comercializar como SaaS:
+
+1. **Tablet/celular no pueden correr este worker.** Sin él, la única forma de imprimir desde esos dispositivos es el preview HTML del navegador (`window.print()`), que da un ticket feo y desperdicia papel -no usa ESC/POS real.
+2. **No escala como SaaS.** Instalar el worker hoy significa ir a cada PC del cliente y editar `appsettings.json` a mano (ver sección "Configuración" más arriba). Insostenible si el sistema crece a muchos clientes/sucursales.
+
+**Importante, ya evaluado:** el backend vive en un servidor en internet, y la impresora (aunque tenga WiFi/Ethernet) tiene una IP privada de la LAN de la sucursal. El backend **no puede** mandarle bytes directo a esa IP -no es ruteable desde internet sin abrir puertos (inseguro/frágil, no se adoptó). Por eso sigue haciendo falta *algún* dispositivo físico en la LAN de la sucursal que sirva de puente entre el backend (en la nube) y la impresora (en la LAN) -la pregunta no es "¿cómo eliminamos ese dispositivo?" sino "¿cómo lo hacemos invisible para el cliente?".
+
+**Referencia real de la industria:** así es como lo resuelve Odoo. Su "IoT Box" es una Raspberry Pi preconfigurada que Odoo vende/envía; el cliente solo la enchufa a la red, y el navegador (desde cualquier laptop/tablet en esa misma LAN) le habla directo a la IoT Box para imprimir -nunca instala nada. Es la misma idea que seguimos acá, solo que empaquetada como producto en vez de un instalador manual.
+
+Otras alternativas que se evaluaron y se descartaron o pospusieron (quedan documentadas por si se revisan después):
+- **WebUSB / Web Bluetooth desde el navegador**: solo funciona en Chrome/Android, no en iOS/Safari -no sirve si se quiere soportar iPad.
+- **App nativa (Capacitor) + SDK Bluetooth del fabricante**: funciona con impresoras sin red (USB/Bluetooth), pero obliga a empaquetar/firmar/actualizar una app nativa aparte. Se deja como alternativa futura si hace falta soportar impresoras sin WiFi/Ethernet.
+- **Star CloudPRNT / Epson ePOS-Print**: la impresora misma consulta a un servidor en la nube por HTTP saliente, eliminando el dispositivo puente por completo. Atractivo, pero ata el catálogo de impresoras soportadas a esos fabricantes específicos. Vale la pena reconsiderar si en el futuro enviar hardware (la Pi) a cada cliente se vuelve el cuello de botella.
+
+### Plan en 3 capas
+
+1. **Capa 1 - transporte de red (siguiente paso, empezar por acá):** reemplazar el envío de bytes vía `winspool` (Windows) por un socket TCP directo a la impresora, para poder correr este worker en Linux/Raspberry Pi.
+2. **Capa 2 - emparejamiento sin tocar config a mano:** que instalar sea "enchufar + un clic en la app", no editar `appsettings.json` por sucursal.
+3. **Capa 3 - entrega de hardware:** imagen de Raspberry Pi OS preconfigurada y lista para flashear.
+
+### Capa 1 en detalle (lo próximo a implementar)
+
+**Pendiente antes de poder probar en la práctica:**
+- Conseguir una impresora térmica 80mm con WiFi o Ethernet (puerto raw **9100**, protocolo JetDirect -el que soportan casi todas las térmicas de red).
+- Conseguir una Raspberry Pi (4 o 5, 64-bit OS) para correr el worker fuera de Windows.
+
+**Cambios de código que hacen falta:**
+
+1. **Backend (`24dex-backend-comercial`)**:
+   - Agregar a `Printers` un campo de tipo de conexión (ej. `ConnectionType`: `UsbWindowsDriver` | `NetworkRaw`) y `IpAddress` / `Port` (nullable, solo aplican si es `NetworkRaw`). Requiere migración EF Core.
+   - Exponer esos campos en los DTOs que ya consume el worker (`GetPrinterConnectionStatus`, el endpoint de discovery).
+
+2. **Este worker (`LaundryPrintWorker`)**:
+   - Nueva clase `Services/NetworkPrinterClient.cs`: abre un `TcpClient` a `ip:puerto` (default 9100) y escribe los mismos bytes ESC/POS que hoy genera `TicketPrinterService`. Debe replicar el mismo patrón de timeout que ya existe ahí (hilo aparte + `Task.WhenAny` contra `Task.Delay`) para no colgar el worker si la impresora no responde.
+   - `TicketPrinterService.PrintAsync` / `PrintTestAsync` deben recibir el tipo de conexión (o el `Printer` completo) y elegir entre `RawPrinterHelper.SendBytesToPrinter` (como hoy, solo Windows) o `NetworkPrinterClient.SendAsync` (nuevo, cross-platform).
+   - `DiscoverPrintersAsync` hoy depende de `PrinterSettings.InstalledPrinters` (API de Windows) -no aplica a impresoras de red. Para la Capa 1 no es bloqueante: alcanza con ingresar la IP manualmente una vez; el auto-descubrimiento en la LAN queda como mejora futura.
+   - El resto (conexión SignalR, `PrintApiClient`, cola de impresión, heartbeat, reconexión ante fallas) **no cambia nada** -ya es cross-platform tal cual está.
+
+**Cómo validarlo cuando se retome:**
+1. Conectar la impresora de red a la misma LAN que la Raspberry Pi (o que la PC de pruebas) y anotar su IP fija.
+2. Confirmar que responde en el puerto 9100 (`Test-NetConnection <ip> -Port 9100` en Windows, o `nc -zv <ip> 9100` en Linux).
+3. Implementar `NetworkPrinterClient` y el branching en `TicketPrinterService`.
+4. Aplicar la migración del backend y registrar manualmente un `Printer` de prueba con `ConnectionType = NetworkRaw`.
+5. Publicar el worker para ARM64 (`dotnet publish -c Release -r linux-arm64 --self-contained true`), copiarlo a la Pi, correrlo como servicio `systemd` (ver sección "Cómo correrlo..." más arriba, pero con el equivalente Linux en vez de `sc.exe`), y confirmar que se registra en el Hub igual que un worker Windows.
+6. Usar el botón "Probar impresión" que ya existe en la pantalla de Emisión del front para mandar un ticket de prueba y confirmar que llega por red.
+
+### Capas 2 y 3 (recién después de validar la Capa 1)
+
+- **Capa 2**: al primer arranque, la Pi genera un código de emparejamiento corto y lo imprime como ticket (ya que tiene la impresora ahí, es gratis mostrarlo así). En el front se agrega una pantalla "Vincular impresora" donde el admin de la sucursal ingresa ese código; el backend asocia `WorkerNode ↔ Sucursal` en ese momento. Elimina la necesidad de editar `appsettings.json` a mano por cliente.
+- **Capa 3**: imagen de Raspberry Pi OS con el worker ya instalado como servicio, lista para flashear y enviar al cliente -instalar pasa a ser "enchufar corriente y red".
+
 ## Notas de seguridad
 
 - No subas `appsettings.Production.json` ni ningún archivo con credenciales/URLs internas reales; están excluidos vía `.gitignore`.
