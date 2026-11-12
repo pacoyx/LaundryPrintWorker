@@ -132,18 +132,18 @@ public sealed class Worker : BackgroundService
         connection.On<PrintNotificationDto>("PrintAvailable",
             async notification =>
             {
-                _logger.LogInformation("Trabajo recibido. QueueId={QueueId}, PrinterId={PrinterId}, PrinterName={PrinterName}", notification.QueueId, notification.PrinterId, notification.PrinterName);
+                _logger.LogDebug("Trabajo recibido. QueueId={QueueId}, PrinterId={PrinterId}, PrinterName={PrinterName}", notification.QueueId, notification.PrinterId, notification.PrinterName);
                 await ProcessPrintJob(notification.QueueId,notification.PrinterName,  stoppingToken);
             });
 
         connection.On<TestPrintCommandDto>("PrintTestTicket",
             async command =>
             {
-                _logger.LogInformation("Prueba de impresión recibida. PrinterName={PrinterName}", command.PrinterName);
+                _logger.LogDebug("Prueba de impresión recibida. PrinterName={PrinterName}", command.PrinterName);
                 try
                 {
                     await _printerService.PrintTestAsync(command.PrinterName, command.Timestamp);
-                    _logger.LogInformation("Prueba de impresión completada en '{Printer}'", command.PrinterName);
+                    _logger.LogDebug("Prueba de impresión completada en '{Printer}'", command.PrinterName);
                 }
                 catch (Exception ex)
                 {
@@ -238,7 +238,7 @@ public sealed class Worker : BackgroundService
     {
         try
         {
-            _logger.LogInformation("Procesando trabajo {QueueId}", queueId);
+            _logger.LogDebug("Procesando trabajo {QueueId}", queueId);
             var job = await _apiClient.GetPrintJobAsync(queueId, cancellationToken);
             if (job is null)
             {
@@ -251,7 +251,7 @@ public sealed class Worker : BackgroundService
             
             //marcamos la cola de impresion como completado
             await _apiClient.MarkAsPrintedAsync(queueId, cancellationToken);
-            _logger.LogInformation("Trabajo {QueueId} completado", queueId);
+            _logger.LogDebug("Trabajo {QueueId} completado", queueId);
         }
         catch (Exception ex)
         {

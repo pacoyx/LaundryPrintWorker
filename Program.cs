@@ -15,6 +15,11 @@ builder.Configuration.GetSection("Seq").Bind(seqSettings);
 // no lo reemplaza.
 var loggerConfig = new LoggerConfiguration()
     .MinimumLevel.Information()
+    // Los handlers por defecto de IHttpClientFactory loguean 4 lineas en Information por cada
+    // llamada HTTP saliente (inicio/fin x logical+client handler). Entre eso y nuestros propios
+    // logs de progreso, un solo trabajo de impresion generaba ~13 lineas de ruido. Silenciado a
+    // Warning: solo se ve algo de HttpClient si de verdad falla una llamada.
+    .MinimumLevel.Override("System.Net.Http.HttpClient", Serilog.Events.LogEventLevel.Warning)
     .Enrich.FromLogContext()
     .Enrich.WithProperty("Application", "LaundryPrintWorker")
     .Enrich.WithProperty("MachineName", Environment.MachineName)
