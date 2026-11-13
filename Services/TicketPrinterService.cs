@@ -194,6 +194,15 @@ public class TicketPrinterService
         bytes.AddRange(e.PrintLine(new string('.', LineWidth)));
         bytes.AddRange(e.CenterAlign());
         bytes.AddRange(e.PrintLine(_settings.ThanksMessage));
+
+        if (!job.ImprimirCopia)
+        {
+            bytes.AddRange(e.PrintLine(""));
+            bytes.AddRange(e.CenterAlign());
+            bytes.AddRange(e.SetStyles(PrintStyle.DoubleWidth | PrintStyle.DoubleHeight));
+            bytes.AddRange(e.PrintLine(job.Cliente.ToUpperInvariant()));
+            bytes.AddRange(e.SetStyles(PrintStyle.None));
+        }
     }
 
     private void PrintControlCopy(EPSON e, List<byte> bytes, PrintJobDto job)
@@ -243,7 +252,9 @@ public class TicketPrinterService
     {
         bytes.AddRange(e.LeftAlign());
         bytes.AddRange(e.PrintLine(new string('-', LineWidth)));
+        bytes.AddRange(e.SetStyles(PrintStyle.Bold));
         bytes.AddRange(e.PrintLine(FormatRow("Cant.", "Descripcion", "P.unit", "Total")));
+        bytes.AddRange(e.SetStyles(PrintStyle.None));
         bytes.AddRange(e.PrintLine(new string('-', LineWidth)));
 
         for (var i = 0; i < job.Detalles.Count; i++)
